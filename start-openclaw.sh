@@ -95,6 +95,11 @@ if r2_configured; then
         echo "Skills restored"
     fi
 
+    # Restore doctor marker (skip doctor if version unchanged)
+    rclone copyto "r2:${R2_BUCKET}/openclaw/.doctor-done" "$CONFIG_DIR/.doctor-done" $RCLONE_FLAGS 2>/dev/null \
+        && echo "Doctor marker restored from R2" \
+        || echo "No doctor marker in R2"
+
     # Restore identity + paired devices (blocking — required for Slack pairing to survive restarts)
     for SUBDIR in identity devices; do
         mkdir -p "$CONFIG_DIR/$SUBDIR"
@@ -376,6 +381,11 @@ if r2_configured; then
                 echo "[sync] Uploading changes ($COUNT files) at $(date)" >> "$LOGFILE"
                 rclone copyto "$CONFIG_FILE" "r2:${R2_BUCKET}/openclaw/openclaw.json" \
                     $RCLONE_FLAGS 2>> "$LOGFILE"
+                # Sync doctor marker
+                if [ -f "$CONFIG_DIR/.doctor-done" ]; then
+                    rclone copyto "$CONFIG_DIR/.doctor-done" "r2:${R2_BUCKET}/openclaw/.doctor-done" \
+                        $RCLONE_FLAGS 2>> "$LOGFILE"
+                fi
                 # Sync cron jobs and sessions (small files, critical for persistence)
                 if [ -d "$CONFIG_DIR/cron" ]; then
                     rclone copy "$CONFIG_DIR/cron/" "r2:${R2_BUCKET}/openclaw-cron/" \
@@ -412,26 +422,68 @@ if r2_configured; then
 fi
 
 # ============================================================
-# DOCTOR FIX (auto-migrate config schema for new OpenClaw versions)
+# DOCTOR FIX (only on version upgrade — saves 3-4 min + 1GB RAM)
 # ============================================================
-echo "Running openclaw doctor --fix..."
-openclaw doctor --fix 2>&1 || echo "Doctor fix completed (or no changes needed)"
+DOCTOR_MARKER="$CONFIG_DIR/.doctor-done"
+CURRENT_VERSION=$(openclaw --version 2>/dev/null || echo "unknown")
+LAST_DOCTOR_VERSION=$(cat "$DOCTOR_MARKER" 2>/dev/null || echo "none")
+
+if [ "$CURRENT_VERSION" != "$LAST_DOCTOR_VERSION" ]; then
+    echo "Version changed ($LAST_DOCTOR_VERSION -> $CURRENT_VERSION), running doctor --fix..."
+    openclaw doctor --fix 2>&1 || echo "Doctor fix completed (or no changes needed)"
+    echo "$CURRENT_VERSION" > "$DOCTOR_MARKER"
+    echo "Doctor marker saved for version $CURRENT_VERSION"
+else
+    echo "Skipping doctor --fix (already ran for $CURRENT_VERSION)"
+fi
 
 # ============================================================
-# START GATEWAY
+# START GATEWAY (restart loop — auto-recover from crashes)
 # ============================================================
-echo "Starting OpenClaw Gateway..."
+echo "Starting OpenClaw Gateway (with auto-restart)..."
 echo "Gateway will be available on port 18789"
 
-rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
-rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
+GATEWAY_ARGS="--port 18789 --verbose --allow-unconfigured --bind lan"
+if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+    GATEWAY_ARGS="$GATEWAY_ARGS --token $OPENCLAW_GATEWAY_TOKEN"
+    echo "Auth: token"
+else
+    echo "Auth: device pairing"
+fi
 
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
-if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-    echo "Starting gateway with token auth..."
-    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN"
-else
-    echo "Starting gateway with device pairing (no token)..."
-    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan
-fi
+RESTART_COUNT=0
+MAX_FAST_RESTARTS=5
+FAST_RESTART_WINDOW=30
+
+while true; do
+    rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
+    rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
+
+    START_TIME=$(date +%s)
+    echo "[gateway] Starting (restart #$RESTART_COUNT) at $(date)"
+
+    openclaw gateway $GATEWAY_ARGS 2>&1 || true
+
+    END_TIME=$(date +%s)
+    RUNTIME=$((END_TIME - START_TIME))
+    RESTART_COUNT=$((RESTART_COUNT + 1))
+
+    echo "[gateway] Exited after ${RUNTIME}s (restart #$RESTART_COUNT) at $(date)"
+
+    # If gateway ran for a while, reset the fast restart counter
+    if [ "$RUNTIME" -gt "$FAST_RESTART_WINDOW" ]; then
+        RESTART_COUNT=0
+    fi
+
+    # Prevent crash loop: if it keeps dying within 30s, back off
+    if [ "$RESTART_COUNT" -ge "$MAX_FAST_RESTARTS" ]; then
+        echo "[gateway] Too many fast restarts ($MAX_FAST_RESTARTS), waiting 60s..."
+        sleep 60
+        RESTART_COUNT=0
+    else
+        echo "[gateway] Restarting in 5s..."
+        sleep 5
+    fi
+done

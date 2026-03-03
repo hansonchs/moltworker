@@ -14,10 +14,10 @@ RUN chmod +x /usr/local/bin/start-openclaw.sh
 
 # Copy custom skills and bot instructions
 COPY skills/ /root/clawd/skills/
-COPY CLAUDE.md /root/clawd/CLAUDE.md
+COPY bot-instructions.md /root/clawd/CLAUDE.md
 
 # Deploy marker
-RUN echo "deployed-2026-03-03c" > /root/.deploy-version
+RUN echo "deployed-2026-03-03d" > /root/.deploy-version
 
 # Set working directory
 WORKDIR /root/clawd

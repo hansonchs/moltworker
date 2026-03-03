@@ -1,5 +1,5 @@
 #!/bin/bash
-# Startup script for OpenClaw in Cloudflare Sandbox
+# Startup script for OpenClaw in Cloudflare Sandbox (v2)
 # This script:
 # 1. Restores config/workspace/skills from R2 via rclone (if configured)
 # 2. Runs openclaw onboard --non-interactive to configure from env vars
@@ -62,29 +62,29 @@ if r2_configured; then
 
     echo "Checking R2 for existing backup..."
     # Check if R2 has an openclaw config backup
-    if rclone ls "r2:${R2_BUCKET}/openclaw/openclaw.json" $RCLONE_FLAGS 2>/dev/null | grep -q openclaw.json; then
-        echo "Restoring config from R2..."
-        rclone copy "r2:${R2_BUCKET}/openclaw/" "$CONFIG_DIR/" $RCLONE_FLAGS -v 2>&1 || echo "WARNING: config restore failed with exit code $?"
-        echo "Config restored"
-    elif rclone ls "r2:${R2_BUCKET}/clawdbot/clawdbot.json" $RCLONE_FLAGS 2>/dev/null | grep -q clawdbot.json; then
-        echo "Restoring from legacy R2 backup..."
-        rclone copy "r2:${R2_BUCKET}/clawdbot/" "$CONFIG_DIR/" $RCLONE_FLAGS -v 2>&1 || echo "WARNING: legacy config restore failed with exit code $?"
-        if [ -f "$CONFIG_DIR/clawdbot.json" ] && [ ! -f "$CONFIG_FILE" ]; then
-            mv "$CONFIG_DIR/clawdbot.json" "$CONFIG_FILE"
-        fi
-        echo "Legacy config restored and migrated"
-    else
-        echo "No backup found in R2, starting fresh"
-    fi
+    # Only copy openclaw.json directly (avoid listing thousands of polluted objects)
+    echo "Restoring openclaw.json from R2..."
+    rclone copyto "r2:${R2_BUCKET}/openclaw/openclaw.json" "$CONFIG_FILE" $RCLONE_FLAGS 2>&1 \
+        && echo "Config restored from R2" \
+        || echo "No config in R2 (or copy failed), will onboard fresh"
 
-    # Restore workspace
-    REMOTE_WS_COUNT=$(rclone ls "r2:${R2_BUCKET}/workspace/" $RCLONE_FLAGS 2>/dev/null | wc -l)
-    if [ "$REMOTE_WS_COUNT" -gt 0 ]; then
-        echo "Restoring workspace from R2 ($REMOTE_WS_COUNT files)..."
-        mkdir -p "$WORKSPACE_DIR"
-        rclone copy "r2:${R2_BUCKET}/workspace/" "$WORKSPACE_DIR/" $RCLONE_FLAGS -v 2>&1 || echo "WARNING: workspace restore failed with exit code $?"
-        echo "Workspace restored"
-    fi
+    # Restore workspace in background (non-blocking, exclude node_modules)
+    # This runs in background so gateway can start immediately
+    mkdir -p "$WORKSPACE_DIR"
+    (
+        echo "Background: restoring workspace from R2 (excluding node_modules)..."
+        rclone copy "r2:${R2_BUCKET}/workspace/" "$WORKSPACE_DIR/" $RCLONE_FLAGS \
+            --exclude='node_modules/**' --exclude='.git/**' -v 2>&1 \
+            || echo "WARNING: workspace restore failed with exit code $?"
+        echo "Background: workspace restore complete"
+    ) &
+    echo "Workspace restore started in background (PID: $!)"
+
+    # Restore cron jobs (small, fast, blocking)
+    mkdir -p "$CONFIG_DIR/cron"
+    rclone copy "r2:${R2_BUCKET}/openclaw-cron/" "$CONFIG_DIR/cron/" $RCLONE_FLAGS 2>&1 \
+        && echo "Cron jobs restored from R2" \
+        || echo "No cron jobs in R2 (or copy failed)"
 
     # Restore skills
     REMOTE_SK_COUNT=$(rclone ls "r2:${R2_BUCKET}/skills/" $RCLONE_FLAGS 2>/dev/null | wc -l)
@@ -94,9 +94,38 @@ if r2_configured; then
         rclone copy "r2:${R2_BUCKET}/skills/" "$SKILLS_DIR/" $RCLONE_FLAGS -v 2>&1 || echo "WARNING: skills restore failed with exit code $?"
         echo "Skills restored"
     fi
+
+    # Restore identity + paired devices (blocking — required for Slack pairing to survive restarts)
+    for SUBDIR in identity devices; do
+        mkdir -p "$CONFIG_DIR/$SUBDIR"
+        rclone copy "r2:${R2_BUCKET}/openclaw/$SUBDIR/" "$CONFIG_DIR/$SUBDIR/" $RCLONE_FLAGS 2>&1 \
+            && echo "$SUBDIR restored from R2" \
+            || echo "No $SUBDIR in R2 (or copy failed)"
+    done
+
+    # Restore sessions (blocking — critical for conversation continuity)
+    SESSIONS_DIR="$CONFIG_DIR/agents"
+    REMOTE_SESS_COUNT=$(rclone ls "r2:${R2_BUCKET}/openclaw/agents/" $RCLONE_FLAGS 2>/dev/null | wc -l)
+    if [ "$REMOTE_SESS_COUNT" -gt 0 ]; then
+        echo "Restoring sessions from R2 ($REMOTE_SESS_COUNT files)..."
+        mkdir -p "$SESSIONS_DIR"
+        rclone copy "r2:${R2_BUCKET}/openclaw/agents/" "$SESSIONS_DIR/" $RCLONE_FLAGS -v 2>&1 \
+            || echo "WARNING: sessions restore failed with exit code $?"
+        echo "Sessions restored"
+    else
+        echo "No sessions in R2"
+    fi
+
+    # Restore cron logs (non-critical, best effort)
+    rclone copyto "r2:${R2_BUCKET}/logs/movie-qa.log" /tmp/movie-qa.log $RCLONE_FLAGS 2>/dev/null \
+        && echo "Cron log restored from R2" \
+        || echo "No cron log in R2"
 else
     echo "R2 not configured, starting fresh"
 fi
+
+# Clean up stale session lock files from previous container instances
+find "$CONFIG_DIR" -name '*.lock' -type f -delete 2>/dev/null && echo "Stale lock files cleaned" || true
 
 # ============================================================
 # ONBOARD (only if no config exists yet)
@@ -154,6 +183,31 @@ try {
 config.gateway = config.gateway || {};
 config.channels = config.channels || {};
 
+// Clean stale keys from R2 backups that may have been written by newer OpenClaw versions
+// and would fail strict config validation on the pinned version (see #47)
+if (config.commands) {
+    delete config.commands.ownerDisplay;
+    delete config.commands.restart;
+}
+
+// Reset meta.lastTouchedVersion to avoid "config was written by newer version" warning
+if (config.meta) {
+    delete config.meta.lastTouchedVersion;
+    delete config.meta.lastTouchedAt;
+}
+
+// Agent defaults (thinkingDefault must be 'off' for models that don't support thinking)
+config.agents = config.agents || {};
+config.agents.defaults = config.agents.defaults || {};
+if (!config.agents.defaults.thinkingDefault) {
+    config.agents.defaults.thinkingDefault = 'off';
+}
+
+// Message settings (ackReactionScope 'direct' limits reaction attempts to DMs only,
+// avoiding missing_scope errors on channel messages where reactions:write is needed)
+config.messages = config.messages || {};
+config.messages.ackReactionScope = 'direct';
+
 // Gateway configuration
 config.gateway.port = 18789;
 config.gateway.mode = 'local';
@@ -167,6 +221,8 @@ if (process.env.OPENCLAW_GATEWAY_TOKEN) {
 if (process.env.OPENCLAW_DEV_MODE === 'true') {
     config.gateway.controlUi = config.gateway.controlUi || {};
     config.gateway.controlUi.allowInsecureAuth = true;
+    // 2026.2.26 requires allowedOrigins for non-loopback controlUi
+    config.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true;
 }
 
 // Legacy AI Gateway base URL override:
@@ -252,17 +308,45 @@ if (process.env.DISCORD_BOT_TOKEN) {
 }
 
 // Slack configuration
+// streaming: false works around openclaw/openclaw#20337 where chat.stopStream
+// fails with missing_recipient_team_id on group channel threads
+// 2026.2.26: dm.policy → dmPolicy, dm.allowFrom → allowFrom (flat keys)
 if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     config.channels.slack = {
         botToken: process.env.SLACK_BOT_TOKEN,
         appToken: process.env.SLACK_APP_TOKEN,
         enabled: true,
+        streaming: false,
+        dmPolicy: 'open',
+        allowFrom: ['*'],
+        channels: {
+            '*': {
+                allow: true,
+                requireMention: true,
+            },
+        },
     };
 }
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
 EOFPATCH
+
+# ============================================================
+# CRON: Movie QA Check (workdays 11:00 HKT = 03:00 UTC)
+# ============================================================
+MOVIE_QA_SCRIPT="/root/clawd/skills/movie-qa-check/scripts/check.mjs"
+if [ -f "$MOVIE_QA_SCRIPT" ]; then
+    # Install cron at runtime if not present (avoids large Docker layer rebuild)
+    if ! command -v cron &>/dev/null; then
+        echo "Installing cron..."
+        apt-get update -qq && apt-get install -y -qq cron >/dev/null 2>&1
+    fi
+    RCLONE_CRON_FLAGS="--s3-no-check-bucket --config /root/.config/rclone/rclone.conf"
+    echo "0 3 * * 1-5 /usr/local/bin/node $MOVIE_QA_SCRIPT >> /tmp/movie-qa.log 2>&1; rclone copyto /tmp/movie-qa.log r2:${R2_BUCKET}/logs/movie-qa.log $RCLONE_CRON_FLAGS 2>/dev/null" | crontab -
+    cron
+    echo "Movie QA cron job installed (workdays 03:00 UTC / 11:00 HKT)"
+fi
 
 # ============================================================
 # BACKGROUND SYNC LOOP
@@ -290,8 +374,13 @@ if r2_configured; then
 
             if [ "$COUNT" -gt 0 ]; then
                 echo "[sync] Uploading changes ($COUNT files) at $(date)" >> "$LOGFILE"
-                rclone sync "$CONFIG_DIR/" "r2:${R2_BUCKET}/openclaw/" \
-                    $RCLONE_FLAGS --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='.git/**' 2>> "$LOGFILE"
+                rclone copyto "$CONFIG_FILE" "r2:${R2_BUCKET}/openclaw/openclaw.json" \
+                    $RCLONE_FLAGS 2>> "$LOGFILE"
+                # Sync cron jobs and sessions (small files, critical for persistence)
+                if [ -d "$CONFIG_DIR/cron" ]; then
+                    rclone copy "$CONFIG_DIR/cron/" "r2:${R2_BUCKET}/openclaw-cron/" \
+                        $RCLONE_FLAGS 2>> "$LOGFILE"
+                fi
                 if [ -d "$WORKSPACE_DIR" ]; then
                     rclone sync "$WORKSPACE_DIR/" "r2:${R2_BUCKET}/workspace/" \
                         $RCLONE_FLAGS --exclude='skills/**' --exclude='.git/**' --exclude='node_modules/**' 2>> "$LOGFILE"
@@ -300,6 +389,19 @@ if r2_configured; then
                     rclone sync "$SKILLS_DIR/" "r2:${R2_BUCKET}/skills/" \
                         $RCLONE_FLAGS 2>> "$LOGFILE"
                 fi
+                # Sync sessions to R2 (use copy, not sync, to avoid deleting
+                # R2 files if container restarted before restore completed)
+                if [ -d "$CONFIG_DIR/agents" ]; then
+                    rclone copy "$CONFIG_DIR/agents/" "r2:${R2_BUCKET}/openclaw/agents/" \
+                        $RCLONE_FLAGS --exclude='*.lock' 2>> "$LOGFILE"
+                fi
+                # Sync identity + paired devices to R2 (persist pairing across restarts)
+                for SUBDIR in identity devices; do
+                    if [ -d "$CONFIG_DIR/$SUBDIR" ]; then
+                        rclone copy "$CONFIG_DIR/$SUBDIR/" "r2:${R2_BUCKET}/openclaw/$SUBDIR/" \
+                            $RCLONE_FLAGS 2>> "$LOGFILE"
+                    fi
+                done
                 date -Iseconds > "$LAST_SYNC_FILE"
                 touch "$MARKER"
                 echo "[sync] Complete at $(date)" >> "$LOGFILE"
@@ -308,6 +410,12 @@ if r2_configured; then
     ) &
     echo "Background sync loop started (PID: $!)"
 fi
+
+# ============================================================
+# DOCTOR FIX (auto-migrate config schema for new OpenClaw versions)
+# ============================================================
+echo "Running openclaw doctor --fix..."
+openclaw doctor --fix 2>&1 || echo "Doctor fix completed (or no changes needed)"
 
 # ============================================================
 # START GATEWAY

@@ -1,43 +1,22 @@
-FROM docker.io/cloudflare/sandbox:0.7.0
+# Use existing built image as base to avoid re-pulling cloudflare/sandbox:0.7.0
+# The 03f3a171 image already has: Node 22, rclone, pnpm, openclaw 2026.2.19-2
+FROM moltbot-sandbox-sandbox:03f3a171
 
-# Install Node.js 22 (required by OpenClaw) and rclone (for R2 persistence)
-# The base image has Node 20, we need to replace it with Node 22
-# Using direct binary download for reliability
-ENV NODE_VERSION=22.13.1
-RUN ARCH="$(dpkg --print-architecture)" \
-    && case "${ARCH}" in \
-         amd64) NODE_ARCH="x64" ;; \
-         arm64) NODE_ARCH="arm64" ;; \
-         *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
-       esac \
-    && apt-get update && apt-get install -y xz-utils ca-certificates rclone \
-    && curl -fsSLk https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz -o /tmp/node.tar.xz \
-    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
-    && rm /tmp/node.tar.xz \
-    && node --version \
-    && npm --version
-
-# Install pnpm globally
-RUN npm install -g pnpm
-
-# Install OpenClaw (formerly clawdbot/moltbot)
-# Pin to specific version for reproducible builds
-RUN npm install -g openclaw@2026.2.3 \
+# Upgrade OpenClaw to 2026.3.1
+RUN npm install -g openclaw@2026.3.1 \
+    && npm cache clean --force \
+    && rm -rf /tmp/* \
     && openclaw --version
 
-# Create OpenClaw directories
-# Legacy .clawdbot paths are kept for R2 backup migration
-RUN mkdir -p /root/.openclaw \
-    && mkdir -p /root/clawd \
-    && mkdir -p /root/clawd/skills
-
-# Copy startup script
-# Build cache bust: 2026-02-11-v30-rclone
+# Copy updated startup script (fixes for 2026.2.26 compat)
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
 # Copy custom skills
 COPY skills/ /root/clawd/skills/
+
+# Force new layer (redeploy 2026-03-03)
+RUN echo "deployed-2026-03-03" > /root/.deploy-version
 
 # Set working directory
 WORKDIR /root/clawd

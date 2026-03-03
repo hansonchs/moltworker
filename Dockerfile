@@ -12,11 +12,12 @@ RUN npm install -g openclaw@2026.3.1 \
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
-# Copy custom skills
+# Copy custom skills and bot instructions
 COPY skills/ /root/clawd/skills/
+COPY CLAUDE.md /root/clawd/CLAUDE.md
 
-# Force new layer (redeploy 2026-03-03)
-RUN echo "deployed-2026-03-03" > /root/.deploy-version
+# Deploy marker
+RUN echo "deployed-2026-03-03b" > /root/.deploy-version
 
 # Set working directory
 WORKDIR /root/clawd

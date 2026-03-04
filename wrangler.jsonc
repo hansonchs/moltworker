@@ -63,6 +63,10 @@
     },
   ],
 
+  // Health check cron trigger (every 5 minutes)
+  "triggers": {
+    "crons": ["*/5 * * * *"],
+  },
   // Browser Rendering binding for CDP shim
   "browser": {
     "binding": "BROWSER",

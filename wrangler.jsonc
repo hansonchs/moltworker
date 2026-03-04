@@ -36,7 +36,7 @@
   "containers": [
     {
       "class_name": "Sandbox",
-      "image": "./Dockerfile",
+      "image": "registry.cloudflare.com/d1b8c375039b7037b7516a2b66d95c04/moltbot-sandbox-sandbox:f3ebaada",
       "instance_type": "standard-1",
       "max_instances": 1,
     },

@@ -7,8 +7,8 @@
 //
 // Zero external dependencies — uses Node.js 22 built-in fetch + tls.
 
-import { createConnection } from 'node:tls';
-import { readFileSync } from 'node:fs';
+import tls from 'node:tls';
+import fs from 'node:fs';
 
 // Config
 const EMAIL_USER = process.env.EMAIL_USER || 'movie6.agent@gmail.com';
@@ -169,7 +169,7 @@ class SimpleIMAP {
 
   connect() {
     return new Promise((resolve, reject) => {
-      this.socket = createConnection({ host: this.host, port: this.port, rejectUnauthorized: false }, () => {});
+      this.socket = tls.connect({ host: this.host, port: this.port, rejectUnauthorized: false }, () => {});
       this.socket.setEncoding('utf8');
       this.socket.once('error', reject);
       // Wait for server greeting
@@ -609,7 +609,7 @@ async function main() {
   let slackToken = process.env.SLACK_BOT_TOKEN;
   if (!slackToken) {
     try {
-      const cfg = JSON.parse(readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
+      const cfg = JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
       slackToken = cfg?.channels?.slack?.botToken;
       if (slackToken) console.log('Using Slack token from openclaw.json');
     } catch (_) {}

@@ -338,19 +338,47 @@ console.log('Configuration patched successfully');
 EOFPATCH
 
 # ============================================================
-# CRON: Movie QA Check (workdays 11:00 HKT = 03:00 UTC)
+# CRON: Scheduled skill scripts (workdays only, all times UTC)
 # ============================================================
-MOVIE_QA_SCRIPT="/root/clawd/skills/movie-qa-check/scripts/check.mjs"
-if [ -f "$MOVIE_QA_SCRIPT" ]; then
-    # Install cron at runtime if not present (avoids large Docker layer rebuild)
-    if ! command -v cron &>/dev/null; then
-        echo "Installing cron..."
-        apt-get update -qq && apt-get install -y -qq cron >/dev/null 2>&1
-    fi
-    RCLONE_CRON_FLAGS="--s3-no-check-bucket --config /root/.config/rclone/rclone.conf"
-    echo "0 3 * * 1-5 /usr/local/bin/node $MOVIE_QA_SCRIPT >> /tmp/movie-qa.log 2>&1; rclone copyto /tmp/movie-qa.log r2:${R2_BUCKET}/logs/movie-qa.log $RCLONE_CRON_FLAGS 2>/dev/null" | crontab -
+# Install cron at runtime if not present (avoids large Docker layer rebuild)
+if ! command -v cron &>/dev/null; then
+    echo "Installing cron..."
+    apt-get update -qq && apt-get install -y -qq cron >/dev/null 2>&1
+fi
+
+RCLONE_CRON_FLAGS="--s3-no-check-bucket --config /root/.config/rclone/rclone.conf"
+NODE="/usr/local/bin/node"
+CRON_JOBS=""
+
+# movie-distributor-email: 10:30 HKT = 02:30 UTC
+SCRIPT="/root/clawd/skills/movie-distributor-email/scripts/check.mjs"
+if [ -f "$SCRIPT" ]; then
+    CRON_JOBS="${CRON_JOBS}30 2 * * 1-5 $NODE $SCRIPT >> /tmp/distributor-email.log 2>&1; rclone copyto /tmp/distributor-email.log r2:${R2_BUCKET}/logs/distributor-email.log $RCLONE_CRON_FLAGS 2>/dev/null\n"
+fi
+
+# movie-qa-check: 10:30 HKT = 02:30 UTC (runs after distributor-email, ~5min gap)
+SCRIPT="/root/clawd/skills/movie-qa-check/scripts/check.mjs"
+if [ -f "$SCRIPT" ]; then
+    CRON_JOBS="${CRON_JOBS}35 2 * * 1-5 $NODE $SCRIPT >> /tmp/movie-qa.log 2>&1; rclone copyto /tmp/movie-qa.log r2:${R2_BUCKET}/logs/movie-qa.log $RCLONE_CRON_FLAGS 2>/dev/null\n"
+fi
+
+# app-store-monitor: 12:00 HKT = 04:00 UTC
+SCRIPT="/root/clawd/skills/app-store-monitor/scripts/check.mjs"
+if [ -f "$SCRIPT" ]; then
+    CRON_JOBS="${CRON_JOBS}0 4 * * 1-5 $NODE $SCRIPT >> /tmp/app-store.log 2>&1; rclone copyto /tmp/app-store.log r2:${R2_BUCKET}/logs/app-store.log $RCLONE_CRON_FLAGS 2>/dev/null\n"
+fi
+
+# seo-monitor: 14:00 HKT = 06:00 UTC (daily report)
+SCRIPT="/root/clawd/skills/seo-monitor/scripts/seo-report.mjs"
+if [ -f "$SCRIPT" ]; then
+    CRON_JOBS="${CRON_JOBS}0 6 * * 1-5 $NODE $SCRIPT daily >> /tmp/seo-monitor.log 2>&1; rclone copyto /tmp/seo-monitor.log r2:${R2_BUCKET}/logs/seo-monitor.log $RCLONE_CRON_FLAGS 2>/dev/null\n"
+fi
+
+if [ -n "$CRON_JOBS" ]; then
+    printf "$CRON_JOBS" | crontab -
     cron
-    echo "Movie QA cron job installed (workdays 03:00 UTC / 11:00 HKT)"
+    echo "Cron jobs installed:"
+    crontab -l | while read -r line; do echo "  $line"; done
 fi
 
 # ============================================================

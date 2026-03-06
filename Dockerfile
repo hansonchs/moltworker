@@ -17,7 +17,7 @@ COPY skills/ /root/clawd/skills/
 COPY bot-instructions.md /root/clawd/CLAUDE.md
 
 # Deploy marker
-RUN echo "deployed-2026-03-04a" > /root/.deploy-version
+RUN echo "deployed-2026-03-05" > /root/.deploy-version
 
 # Set working directory
 WORKDIR /root/clawd

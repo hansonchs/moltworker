@@ -528,18 +528,19 @@ async function main() {
 
   console.log(`   Actionable updates: ${uniqueUpdates.length}\n`);
 
-  // 4. Format and send Slack report
-  if (uniqueUpdates.length === 0) {
-    console.log('All email movies already up-to-date on website. Nothing to report.');
-    return;
-  }
+  // 4. Format and send Slack report (always send summary)
+  const dateStr = new Date().toLocaleDateString('zh-HK', { timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long' });
 
   const lines = [
     '\u{1f4e7} Distributor Email Cross-Check',
-    `\u{1f4c5} ${new Date().toLocaleDateString('zh-HK', { timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long' })}`,
+    `\u{1f4c5} ${dateStr}`,
     `\u{1f4e8} ${emails.length} \u5c01\u76f8\u95dc\u90f5\u4ef6\uff08\u904e\u53bb ${DAYS_BACK} \u65e5\uff09`,
     '',
   ];
+
+  if (uniqueUpdates.length === 0) {
+    lines.push('\u2705 \u6240\u6709\u96fb\u90f5\u63d0\u53ca\u7684\u96fb\u5f71\u5df2\u5728\u7db2\u7ad9\u4e0a\uff0c\u7121\u9700\u66f4\u65b0');
+  }
 
   // Group by action type
   const notOnWebsite = uniqueUpdates.filter(u => u.actions.includes('not_on_website'));

@@ -132,6 +132,35 @@
 
 ---
 
+## Interactive Commands
+
+當有人喺 Slack 叫你做以下操作時，你可以直接 run 相應嘅 script，然後**用廣東話總結結果**。唔好直接 dump raw output，要提取重點。
+
+| Command | 觸發詞 | Script | 說明 |
+|---------|--------|--------|------|
+| `/seo` | "SEO report", "SEO 報告", "check SEO" | `node /root/clawd/skills/seo-monitor/scripts/seo-report.mjs daily` | 即時 SEO daily report，總結 clicks / impressions / sessions 同趨勢 |
+| `/seo weekly` | "weekly SEO", "每週 SEO" | `node /root/clawd/skills/seo-monitor/scripts/seo-report.mjs weekly` | 每週 SEO 趨勢報告，包括 4 週 trend summary |
+| `/qa` | "QA check", "電影檢查", "check movies" | `node /root/clawd/skills/movie-qa-check/scripts/check.mjs` | 電影數據質檢，總結有咩問題 |
+| `/distributor` | "check emails", "發行商郵件", "distributor" | `node /root/clawd/skills/movie-distributor-email/scripts/check.mjs` | 檢查發行商郵件，對比網站數據 |
+| `/appstore` | "app ratings", "app 評分", "app store" | `node /root/clawd/skills/app-store-monitor/scripts/check.mjs` | 檢查 App Store / Play Store 評分 |
+| `/status` | "system status", "health check", "系統狀態" | — | 報告 skills 狀態、最近 cron 執行時間、memory 大小、disk 使用、版本 |
+
+### 執行方式
+1. Run 相應嘅 script
+2. 讀取 output
+3. 用廣東話簡潔總結重點（例如：「今日 clicks 有 1,234，比上次升咗 5.2%，impressions 都升咗」）
+4. 如果有異常或問題，重點指出
+
+### `/status` 實現
+唔需要 run 額外 script，直接查以下資訊：
+- `crontab -l` — 列出所有排程任務
+- `ls -la /tmp/*.log` — 檢查最近嘅 cron log 時間
+- `wc -l /root/clawd/memory.md` — memory 大小
+- `df -h /` — disk 使用
+- `openclaw --version` — 版本
+
+---
+
 ## 記憶系統
 
 你有一個持久記憶檔案 `/root/clawd/memory.md`。
@@ -152,6 +181,30 @@
   ## 2026-03-03
   - 完成咗 health monitoring 功能
   ```
+
+### Memory Tools
+
+你有一個 CLI 工具幫你管理 memory file：
+
+```bash
+# 搜尋記憶（支援中英文）
+node /root/clawd/skills/_shared/memory-tools.mjs search "星達"
+node /root/clawd/skills/_shared/memory-tools.mjs search "SEO clicks"
+
+# 查看統計
+node /root/clawd/skills/_shared/memory-tools.mjs stats
+
+# 最近 N 條記錄
+node /root/clawd/skills/_shared/memory-tools.mjs recent 10
+
+# 歸檔舊記錄（搬到 memory-archive/）
+node /root/clawd/skills/_shared/memory-tools.mjs archive 2026-01-01
+```
+
+#### 使用指引
+- 當 memory file 超過 200 行時，用 `search` 搵特定內容，唔好讀晒成個 file
+- 每月初用 `archive` 清理超過 2 個月嘅記錄
+- 歸檔後嘅記錄會存喺 `/root/clawd/memory-archive/` 入面
 
 ### 注意事項
 - 唔好存敏感資料（API key、密碼）

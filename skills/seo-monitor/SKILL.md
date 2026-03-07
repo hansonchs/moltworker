@@ -18,7 +18,9 @@ node /root/clawd/skills/seo-monitor/scripts/seo-report.mjs daily
 node /root/clawd/skills/seo-monitor/scripts/seo-report.mjs weekly
 ```
 
-自動排程：每個工作天 14:00 HKT（06:00 UTC）透過 crontab 執行 daily report。
+自動排程：
+- **Daily**：每個工作天 14:00 HKT（06:00 UTC）透過 crontab 執行 daily report
+- **Weekly**：每週一 15:00 HKT（07:00 UTC）執行 weekly trend report（包含 4 週趨勢分析）
 
 ## 監控項目
 

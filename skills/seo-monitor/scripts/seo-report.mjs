@@ -75,6 +75,104 @@ function formatNumber(n) {
 }
 
 // ============================================================
+// Weekly trend summary (4-week analysis from history)
+// ============================================================
+
+function getISOWeek(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return { year: d.getUTCFullYear(), week: weekNo };
+}
+
+function getWeekRange(year, week) {
+  // Find Monday of given ISO week
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const dayOfWeek = jan4.getUTCDay() || 7;
+  const monday = new Date(jan4);
+  monday.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1 + (week - 1) * 7);
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+  const fmt = (d) => `${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCDate().toString().padStart(2, '0')}`;
+  return `${fmt(monday)}-${fmt(sunday)}`;
+}
+
+function formatWeeklyTrendSummary(history) {
+  if (!history?.entries?.length) return null;
+
+  // Get entries from last 28 days
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 28);
+  const cutoffStr = cutoff.toISOString().split('T')[0];
+
+  const recentEntries = history.entries.filter(e => e.date >= cutoffStr);
+  if (recentEntries.length < 7) return null; // need at least ~1 week of data
+
+  // Group by ISO week
+  const weekMap = new Map();
+  for (const entry of recentEntries) {
+    const { year, week } = getISOWeek(entry.date);
+    const key = `${year}-W${week.toString().padStart(2, '0')}`;
+    if (!weekMap.has(key)) {
+      weekMap.set(key, { year, week, clicks: 0, impressions: 0, sessions: 0, days: 0 });
+    }
+    const w = weekMap.get(key);
+    if (entry.gsc) {
+      w.clicks += entry.gsc.clicks || 0;
+      w.impressions += entry.gsc.impressions || 0;
+    }
+    if (entry.ga4) {
+      w.sessions += entry.ga4.sessions || 0;
+    }
+    w.days++;
+  }
+
+  // Sort weeks chronologically
+  const weeks = Array.from(weekMap.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-4); // last 4 weeks
+
+  if (weeks.length < 2) return null;
+
+  const lines = [];
+  lines.push('*📈 4-Week Trend Summary*');
+  lines.push('```');
+  lines.push('Week         | Clicks  | Impressions | Sessions | Trend');
+  lines.push('-------------|---------|-------------|----------|------');
+
+  let prevClicks = null;
+  let clicksTrend = []; // track direction for sustained trend detection
+
+  for (const [key, w] of weeks) {
+    const range = getWeekRange(w.year, w.week);
+    const arrow = prevClicks != null ? trendArrow(w.clicks, prevClicks) : ' ';
+    if (prevClicks != null) {
+      clicksTrend.push(w.clicks > prevClicks ? 1 : w.clicks < prevClicks ? -1 : 0);
+    }
+    lines.push(
+      `${range.padEnd(13)}| ${formatNumber(w.clicks).padStart(7)} | ${formatNumber(w.impressions).padStart(11)} | ${formatNumber(w.sessions).padStart(8)} | ${arrow}`
+    );
+    prevClicks = w.clicks;
+  }
+  lines.push('```');
+
+  // Detect sustained trends (3+ weeks same direction)
+  if (clicksTrend.length >= 3) {
+    const lastThree = clicksTrend.slice(-3);
+    if (lastThree.every(d => d > 0)) {
+      lines.push('📈 _Clicks trending up for 3+ consecutive weeks_');
+    } else if (lastThree.every(d => d < 0)) {
+      lines.push('📉 _Clicks trending down for 3+ consecutive weeks_');
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
+// ============================================================
 // Slack helpers (same pattern as app-store-monitor)
 // ============================================================
 
@@ -334,6 +432,11 @@ async function main() {
   let message;
   if (mode === 'weekly') {
     message = formatWeeklyReport(gscSummary, ga4Overview, gscKeywords, gscPages, ga4Landing, ga4Sources);
+    // Prepend 4-week trend summary if enough history
+    const trendSummary = formatWeeklyTrendSummary(history);
+    if (trendSummary) {
+      message = trendSummary + message;
+    }
   } else {
     message = formatDailyReport(gscSummary, ga4Overview, lastEntry);
   }

@@ -208,10 +208,9 @@ if (!config.agents.defaults.thinkingDefault) {
     config.agents.defaults.thinkingDefault = 'off';
 }
 
-// Message settings (ackReactionScope 'direct' limits reaction attempts to DMs only,
-// avoiding missing_scope errors on channel messages where reactions:write is needed)
+// Message settings (ackReactionScope 'all' sends reaction on all messages)
 config.messages = config.messages || {};
-config.messages.ackReactionScope = 'direct';
+config.messages.ackReactionScope = 'all';
 
 // Gateway configuration
 config.gateway.port = 18789;

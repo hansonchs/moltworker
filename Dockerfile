@@ -1,6 +1,6 @@
 # Use existing built image as base to avoid re-pulling cloudflare/sandbox:0.7.0
 # The 03f3a171 image already has: Node 22, rclone, pnpm, openclaw 2026.2.19-2
-FROM moltbot-sandbox-sandbox:03f3a171
+FROM registry.cloudflare.com/d1b8c375039b7037b7516a2b66d95c04/moltbot-sandbox-sandbox:03f3a171
 
 # Upgrade OpenClaw to 2026.3.1
 RUN npm install -g openclaw@2026.3.1 \
@@ -17,7 +17,7 @@ COPY skills/ /root/clawd/skills/
 COPY bot-instructions.md /root/clawd/CLAUDE.md
 
 # Deploy marker
-RUN echo "deployed-2026-03-05a" > /root/.deploy-version
+RUN echo "deployed-2026-03-20" > /root/.deploy-version
 
 # Set working directory
 WORKDIR /root/clawd

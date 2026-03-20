@@ -134,5 +134,46 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
   // Verify gateway is actually responding
   console.log('[Gateway] Verifying gateway health...');
 
+  // Patch crontab — the baked-in startup script may have outdated cron entries.
+  // This ensures the correct skill schedules are always installed after gateway start.
+  try {
+    await patchCrontab(sandbox);
+  } catch (cronErr) {
+    console.error('[Gateway] Failed to patch crontab:', cronErr);
+  }
+
   return process;
+}
+
+/**
+ * Install the correct crontab inside the container.
+ * This overrides whatever the startup script installed.
+ */
+export async function patchCrontab(sandbox: Sandbox): Promise<void> {
+  const NODE = '/usr/local/bin/node';
+  const WRAPPER = '/root/clawd/skills/_shared/run-skill.mjs';
+  const SK = '/root/clawd/skills';
+  const R = '--s3-no-check-bucket --config /root/.config/rclone/rclone.conf';
+  const B = 'moltbot-data';
+
+  const jobs = [
+    `30 2 * * 1-5 ${NODE} ${WRAPPER} Distributor_Email ${SK}/movie-distributor-email/scripts/check.mjs >> /tmp/distributor-email.log 2>&1; rclone copyto /tmp/distributor-email.log r2:${B}/logs/distributor-email.log ${R} 2>/dev/null`,
+    `35 2 * * 1-5 ${NODE} ${WRAPPER} Movie_QA_Check ${SK}/movie-qa-check/scripts/check.mjs >> /tmp/movie-qa.log 2>&1; rclone copyto /tmp/movie-qa.log r2:${B}/logs/movie-qa.log ${R} 2>/dev/null`,
+    `0 4 * * 1-5 ${NODE} ${WRAPPER} App_Store_Monitor ${SK}/app-store-monitor/scripts/check.mjs >> /tmp/app-store.log 2>&1; rclone copyto /tmp/app-store.log r2:${B}/logs/app-store.log ${R} 2>/dev/null`,
+    `0 6 * * 1-5 ${NODE} ${WRAPPER} SEO_Daily ${SK}/seo-monitor/scripts/seo-report.mjs daily >> /tmp/seo-monitor.log 2>&1; rclone copyto /tmp/seo-monitor.log r2:${B}/logs/seo-monitor.log ${R} 2>/dev/null`,
+    `0 7 * * 1 ${NODE} ${WRAPPER} SEO_Weekly ${SK}/seo-monitor/scripts/seo-report.mjs weekly >> /tmp/seo-monitor.log 2>&1; rclone copyto /tmp/seo-monitor.log r2:${B}/logs/seo-monitor.log ${R} 2>/dev/null`,
+  ];
+
+  const crontab = jobs.join('\n') + '\n';
+  // Write crontab file and install it
+  const cmd = `bash -c 'cat > /tmp/patched-crontab << "CRONEOF"\n${crontab}CRONEOF\ncrontab /tmp/patched-crontab && echo "Crontab patched successfully"'`;
+
+  console.log('[Gateway] Patching crontab with', jobs.length, 'jobs...');
+  const proc = await sandbox.startProcess(cmd);
+
+  // Wait briefly for the crontab command to complete
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  const logs = await proc.getLogs();
+  if (logs.stdout) console.log('[Gateway] Crontab patch:', logs.stdout);
+  if (logs.stderr) console.error('[Gateway] Crontab patch stderr:', logs.stderr);
 }

@@ -7,7 +7,7 @@
 
 import { getSandbox } from '@cloudflare/sandbox';
 import type { MoltbotEnv } from './types';
-import { findExistingMoltbotProcess, ensureMoltbotGateway } from './gateway';
+import { findExistingMoltbotProcess, ensureMoltbotGateway, patchCrontab } from './gateway';
 
 /** Slack channel for health alerts */
 const SLACK_CHANNEL = '#automation-testing';
@@ -17,6 +17,12 @@ const ALERT_THRESHOLD = 2;
 
 /** R2 key for persisting health state */
 const HEALTH_STATE_KEY = 'health-state.json';
+
+/** R2 key for tracking crontab patch version */
+const CRON_PATCH_KEY = 'cron-patch-version.txt';
+
+/** Bump this when cron schedule changes — triggers a one-time re-patch */
+const CRON_PATCH_VERSION = '2026-03-20';
 
 export interface HealthState {
   consecutiveFailures: number;
@@ -131,6 +137,21 @@ export async function handleScheduled(env: MoltbotEnv): Promise<void> {
       if (env.SLACK_BOT_TOKEN) {
         await sendSlackAlert(env.SLACK_BOT_TOKEN, msg);
       }
+    }
+
+    // One-time crontab patch: only runs when version changes
+    try {
+      const patchObj = await bucket.get(CRON_PATCH_KEY);
+      const currentVersion = patchObj ? await patchObj.text() : '';
+      if (currentVersion !== CRON_PATCH_VERSION) {
+        console.log('[Health] Crontab patch needed:', currentVersion, '->', CRON_PATCH_VERSION);
+        const sandbox = getSandbox(env.Sandbox, 'moltbot', { keepAlive: true });
+        await patchCrontab(sandbox);
+        await bucket.put(CRON_PATCH_KEY, CRON_PATCH_VERSION);
+        console.log('[Health] Crontab patched to version', CRON_PATCH_VERSION);
+      }
+    } catch (cronErr) {
+      console.error('[Health] Crontab patch failed:', cronErr);
     }
 
     await setHealthState(bucket, {

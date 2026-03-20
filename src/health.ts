@@ -7,7 +7,7 @@
 
 import { getSandbox } from '@cloudflare/sandbox';
 import type { MoltbotEnv } from './types';
-import { findExistingMoltbotProcess } from './gateway';
+import { findExistingMoltbotProcess, ensureMoltbotGateway } from './gateway';
 
 /** Slack channel for health alerts */
 const SLACK_CHANNEL = '#automation-testing';
@@ -141,12 +141,37 @@ export async function handleScheduled(env: MoltbotEnv): Promise<void> {
     });
     console.log('[Health] Gateway is healthy');
   } else {
-    // Gateway is down
+    // Gateway is down — attempt auto-restart
+    console.log(`[Health] Gateway is DOWN (${result.status}). Attempting auto-restart...`);
     const failures = state.consecutiveFailures + 1;
+
+    try {
+      const sandbox = getSandbox(env.Sandbox, 'moltbot', { keepAlive: true });
+      await ensureMoltbotGateway(sandbox, env);
+      console.log('[Health] Auto-restart succeeded!');
+
+      // Restart worked — send recovery alert if we had previously alerted
+      if (state.alertSent && env.SLACK_BOT_TOKEN) {
+        const msg = `✅ Clapper 已自動重啟成功！之前連續 fail ${failures} 次。`;
+        await sendSlackAlert(env.SLACK_BOT_TOKEN, msg);
+      }
+
+      await setHealthState(bucket, {
+        consecutiveFailures: 0,
+        lastCheck: now,
+        lastStatus: 'ok',
+        alertSent: false,
+      });
+      return;
+    } catch (restartErr) {
+      console.error('[Health] Auto-restart failed:', restartErr);
+    }
+
+    // Auto-restart failed — alert if threshold reached
     const shouldAlert = failures >= ALERT_THRESHOLD && !state.alertSent;
 
     if (shouldAlert && env.SLACK_BOT_TOKEN) {
-      const msg = `\u26a0\ufe0f Clapper \u7121\u56de\u61c9\uff01\u5df2\u9023\u7e8c fail ${failures} \u6b21\u3002\u72c0\u614b\uff1a${result.status}\u3002\u932f\u8aa4\uff1a${result.error || 'N/A'}`;
+      const msg = `⚠️ Clapper 無回應且自動重啟失敗！已連續 fail ${failures} 次。狀態：${result.status}。錯誤：${result.error || 'N/A'}`;
       console.log('[Health] Sending alert:', msg);
       await sendSlackAlert(env.SLACK_BOT_TOKEN, msg);
     }
